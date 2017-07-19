@@ -80,11 +80,13 @@ public class MainActivity extends AppCompatActivity {
 
     private Camera.PictureCallback mPicture = new Camera.PictureCallback() {
 
+        private float mRotateAngle;
+
         @Override
         public void onPictureTaken(byte[] data, Camera camera) {
 
             File pictureFile = getOutputMediaFile(MEDIA_TYPE_IMAGE);
-            if (pictureFile == null){
+            if (pictureFile == null) {
                 Log.d(TAG, "Error creating media file, check storage permissions: ");
                 return;
             }
@@ -99,10 +101,10 @@ public class MainActivity extends AppCompatActivity {
                 Log.d(TAG, "Error accessing file: " + e.getMessage());
             }
             String path = pictureFile.getPath();
-            Log.d(TAG, "angle :" + mCameraAngle);
             Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
             Matrix matrix = new Matrix();
             matrix.reset();
+            getRotateAngle();
             matrix.postRotate(mCameraAngle);
             Bitmap rotateBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
             File file = new File(path);
@@ -213,7 +215,14 @@ public class MainActivity extends AppCompatActivity {
             Log.w("ceshi", "back.facing:" + info.orientation + " rotateAngle:" + rotateAngle);
         }
         mCameraAngle =  rotateAngle;
+        Log.d(TAG, "angle :" + mCameraAngle);
         return mCameraAngle;
+    }
+
+    public void getRotateAngle() {
+        if (!mIsBackCamera) {
+            mCameraAngle = (360 - mCameraAngle) % 360;
+        }
     }
 
 
