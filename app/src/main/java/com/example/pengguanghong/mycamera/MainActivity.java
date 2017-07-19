@@ -1,7 +1,11 @@
 package com.example.pengguanghong.mycamera;
 
 import android.app.Activity;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.hardware.Camera;
+import android.media.ExifInterface;
 import android.os.Bundle;
 import android.os.Environment;
 import android.support.v7.app.AppCompatActivity;
@@ -10,16 +14,23 @@ import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.Surface;
+import android.view.SurfaceHolder;
 import android.view.View;
 import android.widget.Button;
 import android.widget.FrameLayout;
 
+import com.crashlytics.android.Crashlytics;
+import com.crashlytics.android.ndk.CrashlyticsNdk;
+
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+
+import io.fabric.sdk.android.Fabric;
 
 
 public class MainActivity extends AppCompatActivity {
@@ -28,6 +39,9 @@ public class MainActivity extends AppCompatActivity {
 
     private CameraPreview mPreview;
     private Camera mCamera;
+    private int mCameraAngle = 0;
+    private boolean mIsBackCamera = true;
+    private SurfaceHolder mSurfaceHolder;
 
     public static final int MEDIA_TYPE_IMAGE = 1;
     public static final int MEDIA_TYPE_VIDEO = 2;
@@ -35,12 +49,14 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        Fabric.with(this, new Crashlytics(), new CrashlyticsNdk());
         setContentView(R.layout.activity_main);
         Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
 
-        mCamera = CameraController.getCameraInstance();
+        mCamera = CameraController.getCameraInstance(mIsBackCamera ? findBackCamera() : findFrontCamera());
         mPreview = new CameraPreview(this, mCamera);
+        mSurfaceHolder = mPreview.getHolder();
         FrameLayout preview = (FrameLayout) findViewById(R.id.camera_preview);
         preview.addView(mPreview);
         mCamera.setDisplayOrientation(getCameraAngle(this));
@@ -52,9 +68,15 @@ public class MainActivity extends AppCompatActivity {
                 mCamera.takePicture(null, null, mPicture);
             }
         });
+        Button change = (Button) findViewById(R.id.button_change);
+        change.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                changeCamera();
+            }
+        });
 
     }
-
 
     private Camera.PictureCallback mPicture = new Camera.PictureCallback() {
 
@@ -76,8 +98,27 @@ public class MainActivity extends AppCompatActivity {
             } catch (IOException e) {
                 Log.d(TAG, "Error accessing file: " + e.getMessage());
             }
+            String path = pictureFile.getPath();
+            Log.d(TAG, "angle :" + mCameraAngle);
+            Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
+            Matrix matrix = new Matrix();
+            matrix.reset();
+            matrix.postRotate(mCameraAngle);
+            Bitmap rotateBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+            File file = new File(path);
+            try {
+                Log.d(TAG, "写入文件");
+                BufferedOutputStream bufferedOutputStream = new BufferedOutputStream(new FileOutputStream(file));
+                rotateBitmap.compress(Bitmap.CompressFormat.JPEG, 100, bufferedOutputStream);
+                bufferedOutputStream.flush();
+                bufferedOutputStream.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
     };
+
+
 
     private static File getOutputMediaFile(int type){
         // To be safe, you should check that the SDCard is mounted
@@ -112,23 +153,40 @@ public class MainActivity extends AppCompatActivity {
         return mediaFile;
     }
 
+    public static int readPictureDegree(String path) {
+        int degree  = 0;
+        try {
+            ExifInterface exifInterface = new ExifInterface(path);
+            int orientation = exifInterface.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+            String orientationAngle = exifInterface.getAttribute(ExifInterface.TAG_ORIENTATION);
+            String device = exifInterface.getAttribute(ExifInterface.TAG_MAKE);
+            Log.d(TAG, "readPictureDegree:" + orientation +" device:" + device + " degreeString:" + orientationAngle);
+            switch (orientation) {
+                case ExifInterface.ORIENTATION_ROTATE_90:
+                    degree = 90;
+                    break;
+                case ExifInterface.ORIENTATION_ROTATE_180:
+                    degree = 180;
+                    break;
+                case ExifInterface.ORIENTATION_ROTATE_270:
+                    degree = 270;
+                    break;
+            }
+        } catch (IOException e) {
+            Log.d(TAG, "IOException:" + e);
+        }
+        return degree;
+    }
+
     /**
      * 获取照相机旋转角度
      */
     public int getCameraAngle(Activity activity) {
         int rotateAngle = 90;
         Camera.CameraInfo info = new Camera.CameraInfo();
-        int cameraId = 0;
-        boolean isBackCamera = true;
-        if (isBackCamera) {
-            cameraId = 0;
-        }
-        else {
-            cameraId = 1;
-        }
-        Camera.getCameraInfo(cameraId, info);
+        Camera.getCameraInfo(mIsBackCamera ? findBackCamera() : findFrontCamera(), info);
         int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
-        Log.w("ceshi", "rotation ==" + rotation);
+        Log.w(TAG, "rotation ==" + rotation);
         int degrees = 0;
         switch (rotation) {
             case Surface.ROTATION_0:
@@ -151,11 +209,80 @@ public class MainActivity extends AppCompatActivity {
             rotateAngle = (360 - rotateAngle) % 360; // compensate the mirror
 //            rotateAngle -= 180;//强制修复nexus6问题
         } else { // back-facing
-            Log.w("ceshi", "back.facing:" + info.orientation);
             rotateAngle = (info.orientation - degrees + 360) % 360;
+            Log.w("ceshi", "back.facing:" + info.orientation + " rotateAngle:" + rotateAngle);
         }
-        return rotateAngle;
+        mCameraAngle =  rotateAngle;
+        return mCameraAngle;
     }
+
+
+    private void changeCamera() {
+        int cameraCount = Camera.getNumberOfCameras();
+        Camera.CameraInfo cameraInfo = new Camera.CameraInfo();
+        Log.d(TAG, "cameraCount:" + cameraCount);
+        if (cameraCount > 0) {
+            releaseCamera();
+            mIsBackCamera = !mIsBackCamera;
+            try{
+                Log.d(TAG, "1111");
+                mCamera = CameraController.getCameraInstance(mIsBackCamera ? findBackCamera() : findFrontCamera());
+                Log.d(TAG, "2222");
+                mCamera.setPreviewDisplay(mSurfaceHolder);
+                mCamera.setDisplayOrientation(getCameraAngle(this));
+                Log.d(TAG, "3333");
+
+                mCamera.startPreview();
+            } catch (Exception e) {
+                Log.d(TAG, "Exception:" + e);
+            }
+        }
+    }
+
+    private int findFrontCamera(){
+        int cameraCount = Camera.getNumberOfCameras();
+        Camera.CameraInfo cameraInfo = new Camera.CameraInfo();
+
+        for ( int camIdx = 0; camIdx < cameraCount;camIdx++ ) {
+            Camera.getCameraInfo(camIdx, cameraInfo); // get camerainfo
+            if ( cameraInfo.facing ==Camera.CameraInfo.CAMERA_FACING_FRONT ) {
+                // 代表摄像头的方位，目前有定义值两个分别为CAMERA_FACING_FRONT前置和CAMERA_FACING_BACK后置
+                Log.d(TAG, "findFrontCamera id:" + camIdx);
+                return camIdx;
+            }
+        }
+        return -1;
+    }
+
+    private int findBackCamera(){
+        int cameraCount = Camera.getNumberOfCameras(); // get cameras number
+        Camera.CameraInfo cameraInfo = new Camera.CameraInfo();
+
+        for ( int camIdx = 0; camIdx < cameraCount;camIdx++ ) {
+            Camera.getCameraInfo(camIdx, cameraInfo); // get camerainfo
+            if ( cameraInfo.facing ==Camera.CameraInfo.CAMERA_FACING_BACK ) {
+                // 代表摄像头的方位，目前有定义值两个分别为CAMERA_FACING_FRONT前置和CAMERA_FACING_BACK后置
+                Log.d(TAG, "findBackCamera id:" + camIdx);
+                return camIdx;
+            }
+        }
+
+        return -1;
+    }
+
+    /**
+     * 释放mCamera
+     */
+    private void releaseCamera() {
+        if (mCamera != null) {
+//            mCamera.setPreviewCallback(null);
+            Log.d(TAG, "releasing camera");
+            mCamera.stopPreview();// 停掉原来摄像头的预览
+            mCamera.release();
+            mCamera = null;
+        }
+    }
+
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
